@@ -1,3 +1,5 @@
+![Banner](banner.png)
+
 # iac-sec-scan-IaCResourceDriftDetector
 Compares the declared state in IaC files with the actual deployed infrastructure state in a cloud provider (e.g., AWS, Azure, GCP). Highlights discrepancies (resource drift) to identify unauthorized changes or misconfigurations. Uses `boto3`, `azure-identity`, or `google-cloud-sdk` for cloud interaction. - Focused on Scans Infrastructure-as-Code configuration files (e.g., Terraform, CloudFormation, Kubernetes manifests) for potential security misconfigurations, compliance violations, and best-practice deviations. Generates reports highlighting risky resources and suggested remediations.
 

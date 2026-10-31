@@ -12,9 +12,10 @@ def setup_argparse():
     """
     Sets up the argument parser for the CLI.
     """
-    parser = argparse.ArgumentParser(description="IaC Security Scanner and Resource Drift Detector.")
+    parser = argparse.ArgumentParser(description="IaC Resource Drift Detector. Compares a declared IaC file with an actual-state file holding the deployed values in the same parsed shape. It does not contact a cloud provider and does not scan for security misconfigurations.")
     parser.add_argument("--iac_file", required=True, help="Path to the IaC file (e.g., Terraform, CloudFormation, Kubernetes manifest).")
-    parser.add_argument("--cloud_provider", required=True, choices=['aws', 'azure', 'gcp'], help="Cloud provider (aws, azure, gcp).")
+    parser.add_argument("--actual_file", required=True, help="Path to a file holding the actual deployed state in the same parsed shape as the IaC file (Terraform, YAML, or JSON). Drift is the difference between this file and the IaC file.")
+    parser.add_argument("--cloud_provider", required=True, choices=['aws', 'azure', 'gcp'], help="Cloud provider the two files describe (aws, azure, gcp). The comparison itself is over the two files for every provider.")
     parser.add_argument("--drift_report", help="Path to save the drift report (optional). If not specified, output to console.")
     parser.add_argument("--log_level", default="INFO", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help="Set the logging level.")
 
@@ -62,57 +63,49 @@ def load_iac_file(iac_file):
         raise
 
 
-def detect_resource_drift(iac_data, cloud_provider):
+def _collect_drift(declared, actual, path, drift_report):
     """
-    Detects resource drift between the declared state in the IaC file and the actual state in the cloud provider.
-
-    This is a placeholder function. In a real implementation, this function would:
-    1. Authenticate to the cloud provider using boto3, azure-identity, or google-cloud-sdk.
-    2. Fetch the current state of the infrastructure from the cloud provider.
-    3. Compare the declared state (iac_data) with the actual state.
-    4. Identify discrepancies (resource drift).
+    Walks both parsed structures and records one drift entry per
+    differing path, naming the path and both values.
     """
-    drift_report = {}
+    if isinstance(declared, dict) and isinstance(actual, dict):
+        for key in sorted(set(declared) | set(actual), key=str):
+            child_path = f"{path}.{key}" if path else str(key)
+            if key not in declared:
+                drift_report[child_path] = f"declared=<absent>, actual={actual[key]!r}"
+            elif key not in actual:
+                drift_report[child_path] = f"declared={declared[key]!r}, actual=<absent>"
+            else:
+                _collect_drift(declared[key], actual[key], child_path, drift_report)
+    elif isinstance(declared, list) and isinstance(actual, list):
+        if len(declared) != len(actual):
+            drift_report[path or "root"] = (
+                f"declared has {len(declared)} item(s), actual has {len(actual)} item(s)"
+            )
+        for index, (declared_item, actual_item) in enumerate(zip(declared, actual)):
+            _collect_drift(declared_item, actual_item, f"{path}[{index}]", drift_report)
+    elif declared != actual:
+        drift_report[path or "root"] = f"declared={declared!r}, actual={actual!r}"
 
-    if cloud_provider == 'aws':
-        logging.info("Connecting to AWS...")
-        # TODO: Implement AWS authentication and resource state fetching using boto3
-        # Example:
-        # import boto3
-        # session = boto3.Session(profile_name='your_aws_profile')
-        # ec2 = session.client('ec2')
-        # instances = ec2.describe_instances()
-        logging.warning("AWS drift detection is not fully implemented.  Returning an empty report.")
 
-    elif cloud_provider == 'azure':
-        logging.info("Connecting to Azure...")
-        # TODO: Implement Azure authentication and resource state fetching using azure-identity and azure-mgmt-* libraries
-        # Example:
-        # from azure.identity import DefaultAzureCredential
-        # from azure.mgmt.compute import ComputeManagementClient
-        # credential = DefaultAzureCredential()
-        # compute_client = ComputeManagementClient(credential, 'your_subscription_id')
-        logging.warning("Azure drift detection is not fully implemented.  Returning an empty report.")
+def detect_resource_drift(iac_data, cloud_provider, actual_data):
+    """
+    Detects resource drift between the declared state in the IaC file
+    and the actual state loaded from the actual-state file.
 
-    elif cloud_provider == 'gcp':
-        logging.info("Connecting to GCP...")
-        # TODO: Implement GCP authentication and resource state fetching using google-cloud-sdk
-        # Example:
-        # from google.cloud import resource_manager
-        # client = resource_manager.Client()
-        # projects = client.list_projects()
-        logging.warning("GCP drift detection is not fully implemented.  Returning an empty report.")
-
-    else:
+    The comparison runs over the two parsed structures for every
+    provider; no cloud provider is contacted. Returns a dict mapping
+    each differing path to a line naming the declared and actual
+    values. An empty dict means the two parsed structures match.
+    """
+    if cloud_provider not in ('aws', 'azure', 'gcp'):
         raise ValueError(f"Unsupported cloud provider: {cloud_provider}")
 
+    if not iac_data or not actual_data:
+        raise ValueError("Drift detection not performed: the IaC data or the actual state parsed to an empty structure, so there is nothing to compare.")
 
-    # Placeholder for drift detection logic
-    # This would involve comparing resources defined in iac_data with the resources obtained from the cloud provider.
-    # Example:
-    # if iac_data['resource']['aws_instance']['example']['ami'] != actual_ami:
-    #    drift_report['instance_ami_drift'] = f"AMI in IaC: {iac_data['resource']['aws_instance']['example']['ami']}, Actual AMI: {actual_ami}"
-
+    drift_report = {}
+    _collect_drift(iac_data, actual_data, "", drift_report)
     return drift_report
 
 def generate_report(drift_report, output_path=None):
@@ -127,14 +120,9 @@ def generate_report(drift_report, output_path=None):
     if not drift_report:
         message = "No resource drift detected."
         if output_path:
-            try:
-                with open(output_path, 'w') as f:
-                    f.write(message)
-                logging.info(f"No drift report written to {output_path} as no drift was detected.")
-
-            except Exception as e:
-                logging.error(f"Error writing no drift report to {output_path}: {e}")
-
+            with open(output_path, 'w') as f:
+                f.write(message)
+            logging.info(f"No drift report written to {output_path} as no drift was detected.")
         else:
             print(message)
         return
@@ -145,14 +133,9 @@ def generate_report(drift_report, output_path=None):
         report_content += f"Drift: {drift_info}\n\n"
 
     if output_path:
-        try:
-            with open(output_path, 'w') as f:
-                f.write(report_content)
-            logging.info(f"Drift report written to {output_path}")
-
-        except Exception as e:
-            logging.error(f"Error writing drift report to {output_path}: {e}")
-
+        with open(output_path, 'w') as f:
+            f.write(report_content)
+        logging.info(f"Drift report written to {output_path}")
     else:
         print("Drift Report:\n")
         print(report_content)
@@ -161,7 +144,7 @@ def generate_report(drift_report, output_path=None):
 
 def main():
     """
-    Main function to orchestrate the IaC security scanning and resource drift detection.
+    Main function to orchestrate the IaC resource drift detection.
     """
     try:
         args = setup_argparse()
@@ -169,18 +152,30 @@ def main():
         # Set logging level
         logging.getLogger().setLevel(args.log_level.upper())
 
-        logging.info(f"Starting IaC security scan and drift detection for {args.iac_file} on {args.cloud_provider}")
+        if args.drift_report and os.path.realpath(args.drift_report) in (
+            os.path.realpath(args.iac_file),
+            os.path.realpath(args.actual_file),
+        ):
+            logging.error("Drift report path resolves to an input file, refusing to overwrite it.")
+            sys.exit(1)
 
-        # Load the IaC file
+        logging.info(f"Starting IaC drift detection for {args.iac_file} on {args.cloud_provider}")
+
+        # Load the IaC file and the actual-state file
         iac_data = load_iac_file(args.iac_file)
+        actual_data = load_iac_file(args.actual_file)
 
-        # Detect resource drift
-        drift_report = detect_resource_drift(iac_data, args.cloud_provider)
+        # Detect resource drift by comparing the two parsed structures
+        drift_report = detect_resource_drift(iac_data, args.cloud_provider, actual_data)
 
-        # Generate the report
+        # Generate the report; a failed write raises and exits 1 below
         generate_report(drift_report, args.drift_report)
 
-        logging.info("IaC security scan and drift detection completed.")
+        if drift_report:
+            logging.warning("Resource drift detected.")
+            sys.exit(1)
+
+        logging.info("IaC drift detection completed.")
 
     except ValueError as ve:
         logging.error(f"Value Error: {ve}")

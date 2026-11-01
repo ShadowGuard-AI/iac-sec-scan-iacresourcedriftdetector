@@ -79,6 +79,11 @@ def _collect_drift(declared, actual, path, drift_report):
                 _collect_drift(declared[key], actual[key], child_path, drift_report)
     elif isinstance(declared, list) and isinstance(actual, list):
         if len(declared) != len(actual):
+            # Length drift is recorded at the list's own path, and the walk still
+            # descends into the zipped pairs below, adding per index entries under
+            # it. A list that shrank therefore reports its new length and every
+            # surviving element that also changed, but nothing about the contents
+            # of the elements that are gone.
             drift_report[path or "root"] = (
                 f"declared has {len(declared)} item(s), actual has {len(actual)} item(s)"
             )
@@ -98,9 +103,18 @@ def detect_resource_drift(iac_data, cloud_provider, actual_data):
     each differing path to a line naming the declared and actual
     values. An empty dict means the two parsed structures match.
     """
+    # The provider is validated and then never used. The comparison is
+    # over the two parsed files for all three providers, which the help
+    # text says plainly: this tool calls no cloud API, so the flag is a
+    # label for the report, not a behaviour switch. Through the command
+    # line the check cannot even fire, because argparse choices already
+    # restrict the value.
     if cloud_provider not in ('aws', 'azure', 'gcp'):
         raise ValueError(f"Unsupported cloud provider: {cloud_provider}")
 
+    # An empty parse is a refusal, not a match. A file that parses to None
+    # or an empty dict compared against anything would manufacture drift
+    # or hide it, so the run fails and says nothing was compared.
     if not iac_data or not actual_data:
         raise ValueError("Drift detection not performed: the IaC data or the actual state parsed to an empty structure, so there is nothing to compare.")
 
@@ -162,6 +176,10 @@ def main():
         logging.info(f"Starting IaC drift detection for {args.iac_file} on {args.cloud_provider}")
 
         # Load the IaC file and the actual-state file
+        # Both files go through the same loader, chosen by extension. The
+        # actual state file has to be written in a format this loader reads,
+        # in the same parsed shape as the declared file, or the walk compares
+        # two differently shaped structures and reports shape as drift.
         iac_data = load_iac_file(args.iac_file)
         actual_data = load_iac_file(args.actual_file)
 
